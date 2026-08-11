@@ -156,16 +156,19 @@
     progEl.style.width = `${Math.max(0, Math.min(100, frac * 100)).toFixed(1)}%`;
   }
 
-  /** CRC32 LE matching esp_rom_crc32_le(0, buf, len) on ESP32. */
+  /**
+   * CRC32 matching esp_rom_crc32_le(0, buf, len) / zlib.crc32.
+   * Must use init 0xffffffff and final XOR (not a raw poly fold from 0).
+   */
   function crc32Esp(buf) {
-    let c = 0;
+    let c = 0xffffffff;
     for (let i = 0; i < buf.length; i++) {
       c ^= buf[i];
       for (let k = 0; k < 8; k++) {
         c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
       }
     }
-    return (c >>> 0);
+    return (c ^ 0xffffffff) >>> 0;
   }
 
   function u16(n) { return n & 0xffff; }
@@ -312,7 +315,12 @@
       fr = await takeFrame(MSG.COMMIT_ACK, 600000);
     }
     if (fr.hdr.status !== 0) {
-      throw new Error(`COMMIT_ACK ${ST[fr.hdr.status] || fr.hdr.status}`);
+      throw new Error(
+        `COMMIT_ACK ${ST[fr.hdr.status] || fr.hdr.status}` +
+        (fr.hdr.status === 5
+          ? ` device=0x${fr.hdr.totalLen.toString(16)} host=0x${fr.hdr.crc32.toString(16)}`
+          : "")
+      );
     }
     setProgress(1);
     log(`${label}: COMMIT OK`, "warn");
