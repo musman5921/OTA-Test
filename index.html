@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HaLow Firmware Updater</title>
+  <style>
+    :root {
+      --bg: #0f141b;
+      --card: #1a212a;
+      --text: #e8ecf1;
+      --muted: #8b95a5;
+      --accent: #00d4a1;
+      --warn: #ff9f43;
+      --err: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #1b2a36, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+      padding: 2rem 1rem 3rem;
+    }
+    main { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 1.6rem; margin: 0 0 0.35rem; }
+    .sub { color: var(--muted); margin-bottom: 1.5rem; line-height: 1.45; }
+    .card {
+      background: var(--card);
+      border-radius: 14px;
+      padding: 1.1rem 1.2rem;
+      margin-bottom: 1rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+    button, label.file {
+      appearance: none;
+      border: 0;
+      border-radius: 10px;
+      padding: 0.7rem 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: #06261d;
+    }
+    button.secondary { background: #2a3542; color: var(--text); }
+    button:disabled, label.file.disabled { opacity: 0.45; cursor: not-allowed; }
+    input[type=file] { display: none; }
+    .log {
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      color: #c9d3df;
+      max-height: 280px;
+      overflow: auto;
+      margin: 0;
+    }
+    .bar {
+      height: 10px;
+      background: #0c1117;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 0.8rem;
+    }
+    .bar > i {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #109974, var(--accent));
+    }
+    .note { color: var(--muted); font-size: 0.9rem; }
+    .warn { color: var(--warn); }
+    .err { color: var(--err); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>HaLow Firmware Updater</h1>
+  <p class="sub">
+    Plug the <strong>Remote</strong> into USB-C, open its Serial/JTAG COM port in Chrome or Edge,
+    then flash Remote firmware (self) or push Jockey firmware over HaLow to all online peers.
+    No ESP32 Wi-Fi required. Firmware <code>.bin</code> files stay on your PC — only the updater page is hosted here.
+  </p>
+
+  <div class="card">
+    <div class="row">
+      <button id="btnConnect" type="button">Connect USB</button>
+      <button id="btnHello" class="secondary" type="button" disabled>Ping Remote</button>
+      <span id="conn" class="note">Disconnected</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Update Remote</h3>
+    <div class="row">
+      <label class="file" id="labRemote">Choose remote.bin
+        <input id="fileRemote" type="file" accept=".bin,application/octet-stream" />
+      </label>
+      <button id="btnFlashRemote" type="button" disabled>Flash Remote</button>
+      <span id="nameRemote" class="note">No file</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Update Jockey(s)</h3>
+    <p class="note">Forwards <code>jockey.bin</code> to every online paired Jockey over HaLow.</p>
+    <div class="row">
+      <label class="file" id="labJockey">Choose jockey.bin
+        <input id="fileJockey" type="file" accept=".bin,application/octet-stream" />
+      </label>
+      <button id="btnFlashJockey" type="button" disabled>Flash Jockeys</button>
+      <span id="nameJockey" class="note">No file</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="bar"><i id="prog"></i></div>
+    <pre class="log" id="log"></pre>
+  </div>
+</main>
+<script>
+(() => {
+  // Framed USB OTA protocol (magic "WUT1") matching Remote usb_ota.c
+  const MAGIC = 0x31545557; // WUT1
+  const CHUNK = 1024;
+  const MSG = {
+    HELLO: 1, HELLO_ACK: 2, BEGIN: 3, BEGIN_ACK: 4,
+    DATA: 5, DATA_ACK: 6, COMMIT: 7, COMMIT_ACK: 8, ABORT: 9, PROGRESS: 10
+  };
+  const TARGET = { SELF: 1, JOCKEY: 2 };
+  const ST = {
+    0: "OK", 1: "BAD_ARG", 2: "BUSY", 3: "NO_MEM", 4: "FLASH",
+    5: "CRC", 6: "ALREADY", 7: "NO_JOCKEY", 8: "JOCKEY_FAIL", 9: "STATE"
+  };
+
+  let port = null;
+  let reader = null;
+  let writer = null;
+  let rxBuf = new Uint8Array(0);
+  let remoteBin = null;
+  let jockeyBin = null;
+
+  const $ = (id) => document.getElementById(id);
+  const logEl = $("log");
+  const progEl = $("prog");
+
+  function log(msg, cls) {
+    const line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setProgress(frac) {
+    progEl.style.width = `${Math.max(0, Math.min(100, frac * 100)).toFixed(1)}%`;
+  }
+
+  /** CRC32 LE matching esp_rom_crc32_le(0, buf, len) on ESP32. */
+  function crc32Esp(buf) {
+    let c = 0;
+    for (let i = 0; i < buf.length; i++) {
+      c ^= buf[i];
+      for (let k = 0; k < 8; k++) {
+        c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+      }
+    }
+    return (c >>> 0);
+  }
+
+  function u16(n) { return n & 0xffff; }
+  function u32(n) { return n >>> 0; }
+
+  /** Pack a 20-byte little-endian OTA header. */
+  function encodeHdr({ msg, target = 0, status = 0, seq = 0, chunkLen = 0, totalLen = 0, crc32 = 0 }) {
+    const b = new ArrayBuffer(20);
+    const v = new DataView(b);
+    v.setUint32(0, MAGIC, true);
+    v.setUint8(4, msg);
+    v.setUint8(5, target);
+    v.setUint8(6, status);
+    v.setUint8(7, 0);
+    v.setUint16(8, u16(seq), true);
+    v.setUint16(10, u16(chunkLen), true);
+    v.setUint32(12, u32(totalLen), true);
+    v.setUint32(16, u32(crc32), true);
+    return new Uint8Array(b);
+  }
+
+  function concat(a, b) {
+    const o = new Uint8Array(a.length + b.length);
+    o.set(a, 0); o.set(b, a.length);
+    return o;
+  }
+
+  function parseHdr(bytes, off = 0) {
+    const v = new DataView(bytes.buffer, bytes.byteOffset + off, 20);
+    return {
+      magic: v.getUint32(0, true),
+      msg: v.getUint8(4),
+      target: v.getUint8(5),
+      status: v.getUint8(6),
+      seq: v.getUint16(8, true),
+      chunkLen: v.getUint16(10, true),
+      totalLen: v.getUint32(12, true),
+      crc32: v.getUint32(16, true)
+    };
+  }
+
+  async function pumpRead() {
+    while (port && reader) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value && value.length) rxBuf = concat(rxBuf, value);
+    }
+  }
+
+  /** Wait for one framed response matching wantMsg (or PROGRESS during COMMIT). */
+  function takeFrame(wantMsg, timeoutMs = 8000) {
+    return new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      const tick = () => {
+        let i = 0;
+        while (i + 20 <= rxBuf.length) {
+          const h = parseHdr(rxBuf, i);
+          if (h.magic !== MAGIC) { i++; continue; }
+          const need = 20 + h.chunkLen;
+          if (i + need > rxBuf.length) break;
+          const body = rxBuf.slice(i + 20, i + need);
+          rxBuf = rxBuf.slice(i + need);
+          if (wantMsg == null || h.msg === wantMsg) {
+            resolve({ hdr: h, body });
+            return;
+          }
+          if (wantMsg === MSG.COMMIT_ACK && h.msg === MSG.PROGRESS) {
+            resolve({ hdr: h, body });
+            return;
+          }
+          continue;
+        }
+        if (Date.now() - t0 > timeoutMs) {
+          reject(new Error("timeout waiting for device ACK"));
+          return;
+        }
+        setTimeout(tick, 20);
+      };
+      tick();
+    });
+  }
+
+  async function writeBytes(u8) {
+    await writer.write(u8);
+  }
+
+  async function connect() {
+    if (!("serial" in navigator)) {
+      log("WebSerial unavailable — use Chrome or Edge on desktop.", "err");
+      return;
+    }
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    reader = port.readable.getReader();
+    writer = port.writable.getWriter();
+    pumpRead().catch(() => {});
+    $("conn").textContent = "Connected";
+    $("btnHello").disabled = false;
+    $("btnFlashRemote").disabled = !remoteBin;
+    $("btnFlashJockey").disabled = !jockeyBin;
+    log("USB port open. Click Ping Remote.");
+  }
+
+  async function hello() {
+    await writeBytes(encodeHdr({ msg: MSG.HELLO }));
+    const { hdr, body } = await takeFrame(MSG.HELLO_ACK, 3000);
+    const ver = new TextDecoder().decode(body).replace(/\0+$/g, "");
+    log(`HELLO_ACK status=${ST[hdr.status] || hdr.status} version=${ver || "?"}`);
+  }
+
+  async function transfer(bin, target, label) {
+    const crc = crc32Esp(bin);
+    log(`${label}: ${bin.length} bytes crc=0x${crc.toString(16)}`);
+    setProgress(0);
+    await writeBytes(encodeHdr({
+      msg: MSG.BEGIN, target, totalLen: bin.length, crc32: crc
+    }));
+    let fr = await takeFrame(MSG.BEGIN_ACK, 15000);
+    if (fr.hdr.status !== 0) {
+      throw new Error(`BEGIN_ACK ${ST[fr.hdr.status] || fr.hdr.status}`);
+    }
+    let seq = 0;
+    for (let off = 0; off < bin.length; off += CHUNK) {
+      const chunk = bin.subarray(off, Math.min(bin.length, off + CHUNK));
+      const hdr = encodeHdr({
+        msg: MSG.DATA, target, seq, chunkLen: chunk.length, totalLen: bin.length, crc32: crc
+      });
+      await writeBytes(concat(hdr, chunk));
+      fr = await takeFrame(MSG.DATA_ACK, 10000);
+      while (fr.hdr.msg === MSG.PROGRESS) {
+        log(`PROGRESS slot/hint=${fr.hdr.seq}`);
+        fr = await takeFrame(MSG.DATA_ACK, 10000);
+      }
+      if (fr.hdr.status !== 0 || fr.hdr.seq !== seq) {
+        throw new Error(`DATA_ACK fail status=${ST[fr.hdr.status] || fr.hdr.status} seq=${fr.hdr.seq}`);
+      }
+      seq++;
+      setProgress((off + chunk.length) / bin.length * 0.9);
+    }
+    await writeBytes(encodeHdr({ msg: MSG.COMMIT, target, totalLen: bin.length, crc32: crc }));
+    fr = await takeFrame(MSG.COMMIT_ACK, 600000);
+    while (fr.hdr.msg === MSG.PROGRESS) {
+      log(`Forwarding… progress seq=${fr.hdr.seq}`);
+      fr = await takeFrame(MSG.COMMIT_ACK, 600000);
+    }
+    if (fr.hdr.status !== 0) {
+      throw new Error(`COMMIT_ACK ${ST[fr.hdr.status] || fr.hdr.status}`);
+    }
+    setProgress(1);
+    log(`${label}: COMMIT OK`, "warn");
+  }
+
+  $("btnConnect").onclick = () => connect().catch((e) => log(String(e), "err"));
+  $("btnHello").onclick = () => hello().catch((e) => log(String(e), "err"));
+
+  $("fileRemote").onchange = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    remoteBin = new Uint8Array(await f.arrayBuffer());
+    $("nameRemote").textContent = `${f.name} (${remoteBin.length} B)`;
+    $("btnFlashRemote").disabled = !port;
+  };
+  $("fileJockey").onchange = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    jockeyBin = new Uint8Array(await f.arrayBuffer());
+    $("nameJockey").textContent = `${f.name} (${jockeyBin.length} B)`;
+    $("btnFlashJockey").disabled = !port;
+  };
+
+  $("btnFlashRemote").onclick = () => {
+    if (!remoteBin) return;
+    $("btnFlashRemote").disabled = true;
+    $("btnFlashJockey").disabled = true;
+    transfer(remoteBin, TARGET.SELF, "Remote")
+      .then(() => log("Remote will reboot into the new image."))
+      .catch((e) => log(String(e), "err"))
+      .finally(() => {
+        $("btnFlashRemote").disabled = !port || !remoteBin;
+        $("btnFlashJockey").disabled = !port || !jockeyBin;
+      });
+  };
+  $("btnFlashJockey").onclick = () => {
+    if (!jockeyBin) return;
+    $("btnFlashRemote").disabled = true;
+    $("btnFlashJockey").disabled = true;
+    transfer(jockeyBin, TARGET.JOCKEY, "Jockey")
+      .then(() => log("Online Jockeys should reboot if COMMIT OK."))
+      .catch((e) => log(String(e), "err"))
+      .finally(() => {
+        $("btnFlashRemote").disabled = !port || !remoteBin;
+        $("btnFlashJockey").disabled = !port || !jockeyBin;
+      });
+  };
+
+  if (!("serial" in navigator)) {
+    log("Open this page in Chrome or Edge on a desktop OS.", "err");
+  }
+})();
+</script>
+</body>
+</html>
