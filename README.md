@@ -2,143 +2,101 @@
 
 Public repo for HaLow OTA testing:
 
-- **GitHub Releases** — firmware packages for the existing Wi‑Fi / GitHub OTA path
-- **GitHub Pages** — WebSerial USB updater (no ESP32 Wi‑Fi required)
+- **GitHub Releases** — `remote.bin` + `jockey.bin` assets (Wi‑Fi OTA and USB updater)
+- **GitHub Pages** — WebSerial USB updater
 
-## WebSerial USB updater URL
-
-After Pages is enabled (see below):
+## WebSerial USB updater
 
 **https://musman5921.github.io/OTA-Test/**
 
-Use **Chrome** or **Edge** on a desktop. WebSerial needs HTTPS (Pages) or localhost.
+The page:
 
-The page never uploads your `.bin` files to GitHub. You choose a local file; the browser sends it straight to the Remote over USB.
+1. Loads the **latest Release** via GitHub API  
+2. Downloads `remote.bin` / `jockey.bin` in the browser  
+3. Sends them to the Remote over **USB Serial/JTAG** (WebSerial)
+
+There is no local file picker. To ship a new USB-flashable build, attach those assets to a new Release (same as Wi‑Fi OTA).
+
+Use **Chrome** or **Edge** on desktop (HTTPS required — Pages provides that).
 
 ## Enable GitHub Pages (one time)
 
-1. Commit and push `index.html` (and this README) to `main`.
-2. Open https://github.com/musman5921/OTA-Test/settings/pages
-3. Under **Build and deployment**:
-   - **Source:** Deploy from a branch
-   - **Branch:** `main`
-   - **Folder:** `/ (root)`
-4. Click **Save**.
-5. Wait 1–2 minutes, then open https://musman5921.github.io/OTA-Test/
+1. Push `index.html` to `main`.
+2. Open https://github.com/musman5921/OTA-Test/settings/pages  
+3. **Source:** Deploy from a branch → **Branch:** `main` → **Folder:** `/ (root)` → Save  
+4. Open https://musman5921.github.io/OTA-Test/
 
-## Keep `ver.txt` / Releases as they are
+## Keep Releases / `ver.txt`
 
-Do not delete `ver.txt`. Tag/release workflow for Wi‑Fi OTA can stay unchanged. The updater page is only an extra file at the repo root.
+Do not remove `ver.txt`. Continue publishing releases with assets named exactly:
+
+| Asset | Target |
+|-------|--------|
+| `remote.bin` | Remote (ap_mode) |
+| `jockey.bin` | Jockey (sta_connect) |
 
 ---
 
-## Full USB OTA test procedure
+## Test procedure (USB via Pages)
 
-You need two things:
+### A. One-time: Flash Remote with USB-OTA firmware
 
-1. **Remote firmware that includes USB OTA** (built from private `esp32s3-morse-halow` branch `feature/webserial-usb-ota`)
-2. **This Pages site** open in Chrome/Edge
-
-### A. Build and flash Remote once (ESP-IDF)
-
-1. Open ESP-IDF PowerShell.
-2. Build Remote:
+Remote must already run the private-repo firmware that includes `usb_ota` (branch `feature/webserial-usb-ota`).
 
 ```powershell
 cd "c:\Users\SPARTA LAPTOP\Documents\GitHub\esp32s3-morse-halow\mm-iot-esp32-2.10.4\examples\ap_mode"
 idf.py build
-```
-
-3. Plug Remote USB-C into the PC. Note the COM port (Device Manager).
-4. Flash:
-
-```powershell
 idf.py -p COMx flash
 ```
 
-Replace `COMx` with your port (example: `COM5`).
+Leave Remote powered and booted.
 
-5. Wait for boot (LCD / HaLow AP as usual). Leave Remote powered on.
-
-Firmware file you will pick later in the browser:
-
-`...\examples\ap_mode\build\ap_mode.bin`
-
-### B. Publish this updater page (if not done yet)
+### B. Publish this page (if you changed it)
 
 ```powershell
 cd "c:\Users\SPARTA LAPTOP\Documents\GitHub\OTA-Test"
-git status
 git add index.html README.md
-git commit -m "Add WebSerial USB firmware updater for GitHub Pages."
+git commit -m "Fetch firmware from latest OTA-Test Release (no local picker)."
 git push origin main
 ```
 
-Then enable Pages as in **Enable GitHub Pages** above.
+Hard-refresh Pages (`Ctrl+Shift+R`) after ~1 minute.
 
-### C. Open the Pages site and connect USB
+### C. Ensure a Release has the bins
 
-1. On the PC, open **Chrome** or **Edge**.
-2. Go to: https://musman5921.github.io/OTA-Test/
-3. Plug Remote in (app running — not stuck in bootloader/download mode).
-4. Click **Connect USB**.
-5. In the port list, choose **ESP32-S3 USB Serial/JTAG**.
+Latest Release must include `remote.bin` and (for Jockey test) `jockey.bin`.  
+Example: https://github.com/musman5921/OTA-Test/releases/latest
 
-Tip: the board may show two COM ports. Prefer **USB Serial/JTAG**, not the UART bridge used by `idf.py monitor`. If Ping fails, try the other port. Close `idf.py monitor` if it holds the same port.
+### D. Run the updater
 
-6. Click **Ping Remote**.  
-   Pass = log shows `HELLO_ACK` and a firmware version.
+1. Chrome/Edge → https://musman5921.github.io/OTA-Test/  
+2. Wait for log: release loaded + downloads finished (or click **Load latest release**)  
+3. **Connect USB** → pick **ESP32-S3 USB Serial/JTAG**  
+4. **Ping Remote** → `HELLO_ACK` + device version  
+5. **Flash Remote** → progress → `COMMIT OK` → device reboots  
+6. Optional: with an online paired Jockey → **Flash Jockeys**
 
-### D. Test Flash Remote (self update)
+### Pass / fail
 
-1. Click **Choose remote.bin** → select:
-
-`...\ap_mode\build\ap_mode.bin`
-
-2. Click **Flash Remote**.
-3. Wait for progress → `COMMIT OK` → Remote reboots.
-4. After reboot: **Connect USB** again → **Ping Remote**.  
-   Pass = Ping works on the new image.
-
-### E. Test Flash Jockeys (optional)
-
-Only if at least one Jockey is paired and online on the Remote dashboard.
-
-1. Build Jockey firmware:
-
-```powershell
-cd "c:\Users\SPARTA LAPTOP\Documents\GitHub\esp32s3-morse-halow\mm-iot-esp32-2.10.4\examples\sta_connect"
-idf.py build
-```
-
-Binary: `...\sta_connect\build\sta_connect.bin`
-
-2. Confirm Jockey is **online** on Remote.
-3. On the Pages site: Connect → Ping.
-4. **Choose jockey.bin** → `sta_connect.bin` → **Flash Jockeys**.
-5. Pass = `COMMIT OK` and Jockey reboots / comes back online.
-
-### Pass / fail cheat sheet
-
-| Step | Pass |
-|------|------|
-| Pages URL loads | Updater UI visible over HTTPS |
-| Ping Remote | `HELLO_ACK` + version |
-| Flash Remote | `COMMIT OK`, reboot, Ping again works |
-| Flash Jockeys | `COMMIT OK`, online Jockey updates |
+| Check | Pass |
+|-------|------|
+| Release load | Log shows tag + `remote.bin` / `jockey.bin` sizes |
+| Ping | `HELLO_ACK` |
+| Flash Remote | `COMMIT OK`, reboot, Ping works again |
+| Flash Jockeys | `COMMIT OK`, Jockey reboots / returns online |
 
 ### Common problems
 
-| Symptom | Likely fix |
-|---------|------------|
-| No WebSerial / Connect fails | Use Chrome/Edge desktop; use the HTTPS Pages URL |
-| Ping timeout | Wrong COM port, or Remote missing USB OTA firmware (re-flash Step A) |
-| Port busy | Close `idf.py monitor` / another serial app |
-| Jockey `NO_JOCKEY` | Pair and wait until Jockey shows online |
+| Symptom | Fix |
+|---------|-----|
+| Release load fails | Check network / API rate limit; open Releases page manually |
+| Missing asset | Attach `remote.bin` / `jockey.bin` to the latest Release |
+| Ping timeout | Wrong COM port, or Remote missing USB OTA app |
+| Same version | USB path still reflash; Wi‑Fi menu may skip same tag |
 
-### Files involved
+### Repos
 
 | Repo | Role |
 |------|------|
-| `musman5921/OTA-Test` (this repo) | Public Pages host + Releases |
-| Private `esp32s3-morse-halow` | Real firmware source (`usb_ota` on Remote) |
+| `musman5921/OTA-Test` | Public Releases + Pages updater |
+| Private `esp32s3-morse-halow` | Firmware source (`usb_ota`) |
