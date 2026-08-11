@@ -14,12 +14,17 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
+      # Always work on main — release events otherwise leave a detached tag HEAD,
+      # and bare `git push` fails with exit 128.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download latest release assets
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p firmware
@@ -35,6 +40,8 @@ jobs:
           ls -la firmware
 
       - name: Commit and push firmware mirror
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -46,4 +53,4 @@ jobs:
           fi
           TAG="$(tr -d '\r\n' < firmware/VERSION.txt)"
           git commit -m "Mirror firmware assets from ${TAG} for GitHub Pages."
-          git push
+          git push origin HEAD:main
