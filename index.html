@@ -77,9 +77,9 @@
 <main>
   <h1>HaLow Firmware Updater</h1>
   <p class="sub">
-    Downloads <code>remote.bin</code> / <code>jockey.bin</code> from the latest
-    <strong>OTA-Test</strong> GitHub Release, then flashes over USB Serial/JTAG.
-    No ESP32 Wi‑Fi and no local file picker.
+    Loads <code>remote.bin</code> / <code>jockey.bin</code> from this site’s
+    <code>firmware/</code> mirror of the latest <strong>OTA-Test</strong> Release,
+    then flashes over USB Serial/JTAG. No ESP32 Wi‑Fi and no local file picker.
   </p>
 
   <div class="card">
@@ -271,14 +271,22 @@
   }
 
   /**
-   * Download one public release asset as Uint8Array.
-   * Uses browser_download_url (GitHub → objects.githubusercontent.com).
+   * Download a firmware blob from the same GitHub Pages origin.
+   *
+   * Direct browser fetch of GitHub Release asset URLs fails CORS
+   * (api.github.com works; objects.githubusercontent.com does not allow
+   * cross-origin reads). Pages serves copies under ./firmware/.
    */
-  async function downloadAsset(url, label) {
-    log(`Downloading ${label}…`);
-    const res = await fetch(url, { redirect: "follow" });
+  async function downloadMirror(label) {
+    const url = new URL(`firmware/${label}`, window.location.href);
+    url.searchParams.set("t", String(Date.now())); // bust CDN/browser cache
+    log(`Downloading ${url.pathname}…`);
+    const res = await fetch(url.href, { cache: "no-store" });
     if (!res.ok) {
-      throw new Error(`download ${label} HTTP ${res.status}`);
+      throw new Error(
+        `${label} missing on Pages (HTTP ${res.status}). ` +
+        `Push firmware/${label} to main (or run the mirror-release workflow).`
+      );
     }
     const buf = new Uint8Array(await res.arrayBuffer());
     log(`${label}: ${fmtBytes(buf.length)} (${buf.length} bytes)`);
@@ -286,7 +294,7 @@
   }
 
   /**
-   * Query GET /releases/latest and pull remote.bin + jockey.bin.
+   * Load firmware from Pages mirror; show latest Release tag from GitHub API.
    */
   async function loadLatestRelease() {
     $("btnRelease").disabled = true;
@@ -295,54 +303,67 @@
     releaseTag = "";
     $("nameRemote").textContent = "Loading…";
     $("nameJockey").textContent = "Loading…";
-    $("relInfo").textContent = "Contacting GitHub…";
+    $("relInfo").textContent = "Loading firmware…";
     syncFlashButtons();
 
     try {
-      const api =
-        `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/releases/latest`;
-      log(`GET ${api}`);
-      const res = await fetch(api, {
-        headers: { Accept: "application/vnd.github+json" }
-      });
-      if (!res.ok) {
-        throw new Error(`releases/latest HTTP ${res.status}`);
-      }
-      const rel = await res.json();
-      releaseTag = rel.tag_name || "?";
-      const assets = Array.isArray(rel.assets) ? rel.assets : [];
-      const remoteAsset = assets.find((a) => a.name === ASSET_REMOTE);
-      const jockeyAsset = assets.find((a) => a.name === ASSET_JOCKEY);
-
-      $("relInfo").textContent = `Latest release: ${releaseTag}`;
-      log(`Latest release ${releaseTag} (${assets.length} assets)`);
-
-      if (remoteAsset?.browser_download_url) {
-        remoteBin = await downloadAsset(remoteAsset.browser_download_url, ASSET_REMOTE);
-        $("nameRemote").textContent =
-          `${ASSET_REMOTE} from ${releaseTag} · ${fmtBytes(remoteBin.length)}`;
-      } else {
-        $("nameRemote").textContent = `${ASSET_REMOTE} not in ${releaseTag}`;
-        log(`Missing asset ${ASSET_REMOTE}`, "warn");
+      // Optional: learn latest GitHub tag (API allows CORS; asset download does not).
+      try {
+        const api =
+          `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/releases/latest`;
+        log(`GET ${api}`);
+        const res = await fetch(api, {
+          headers: { Accept: "application/vnd.github+json" }
+        });
+        if (res.ok) {
+          const rel = await res.json();
+          releaseTag = rel.tag_name || "";
+          log(`Latest GitHub release: ${releaseTag || "?"}`);
+        } else {
+          log(`releases/latest HTTP ${res.status} — continuing with Pages mirror`, "warn");
+        }
+      } catch (e) {
+        log(`Release API unavailable (${e}) — using Pages mirror`, "warn");
       }
 
-      if (jockeyAsset?.browser_download_url) {
-        jockeyBin = await downloadAsset(jockeyAsset.browser_download_url, ASSET_JOCKEY);
-        $("nameJockey").textContent =
-          `${ASSET_JOCKEY} from ${releaseTag} · ${fmtBytes(jockeyBin.length)}`;
-      } else {
-        $("nameJockey").textContent = `${ASSET_JOCKEY} not in ${releaseTag}`;
-        log(`Missing asset ${ASSET_JOCKEY}`, "warn");
+      let mirrorVer = "";
+      try {
+        const vRes = await fetch(
+          new URL(`firmware/VERSION.txt?t=${Date.now()}`, window.location.href).href,
+          { cache: "no-store" }
+        );
+        if (vRes.ok) {
+          mirrorVer = (await vRes.text()).trim();
+          log(`Pages firmware mirror tag: ${mirrorVer}`);
+        }
+      } catch (_) { /* optional */ }
+
+      if (releaseTag && mirrorVer && releaseTag !== mirrorVer) {
+        log(
+          `Mirror ${mirrorVer} differs from GitHub latest ${releaseTag}. ` +
+          `Re-run mirror workflow or update firmware/ after publishing the Release.`,
+          "warn"
+        );
       }
 
-      if (!remoteBin && !jockeyBin) {
-        throw new Error("no remote.bin / jockey.bin in latest release");
-      }
-      log("Release assets ready.", "warn");
+      const shownTag = mirrorVer || releaseTag || "mirror";
+      $("relInfo").textContent = `Firmware: ${shownTag}`;
+
+      remoteBin = await downloadMirror(ASSET_REMOTE);
+      $("nameRemote").textContent =
+        `${ASSET_REMOTE} (${shownTag}) · ${fmtBytes(remoteBin.length)}`;
+
+      jockeyBin = await downloadMirror(ASSET_JOCKEY);
+      $("nameJockey").textContent =
+        `${ASSET_JOCKEY} (${shownTag}) · ${fmtBytes(jockeyBin.length)}`;
+
+      log("Firmware ready.", "warn");
     } catch (e) {
-      $("relInfo").textContent = "Failed to load release";
+      $("relInfo").textContent = "Failed to load firmware";
       $("nameRemote").textContent = "—";
       $("nameJockey").textContent = "—";
+      remoteBin = null;
+      jockeyBin = null;
       log(String(e), "err");
     } finally {
       $("btnRelease").disabled = false;

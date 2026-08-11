@@ -11,11 +11,20 @@ Public repo for HaLow OTA testing:
 
 The page:
 
-1. Loads the **latest Release** via GitHub API  
-2. Downloads `remote.bin` / `jockey.bin` in the browser  
+1. Reads the latest Release **tag** via GitHub API (optional)  
+2. Downloads `remote.bin` / `jockey.bin` from **this Pages site** (`firmware/`)  
 3. Sends them to the Remote over **USB Serial/JTAG** (WebSerial)
 
-There is no local file picker. To ship a new USB-flashable build, attach those assets to a new Release (same as Wi‑Fi OTA).
+Why not download Release assets directly? Browsers block that with **CORS**
+(`Failed to fetch`). The API works; the `.bin` CDN does not allow cross-origin reads.
+So Releases stay the source of truth for Wi‑Fi OTA, and a small Actions workflow
+mirrors those bins into `firmware/` for the webpage.
+
+There is no local file picker. To ship a new build:
+
+1. Publish a Release with `remote.bin` + `jockey.bin` (same as Wi‑Fi OTA)  
+2. Workflow **Mirror release to Pages** updates `firmware/` (or copy them manually)  
+3. Hard-refresh the Pages site
 
 Use **Chrome** or **Edge** on desktop (HTTPS required — Pages provides that).
 

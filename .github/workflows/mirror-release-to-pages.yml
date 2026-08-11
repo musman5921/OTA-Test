@@ -1,0 +1,49 @@
+# Mirror latest Release assets into ./firmware for GitHub Pages.
+# Browsers cannot fetch GitHub Release binaries (CORS); same-origin Pages can.
+name: Mirror release to Pages
+
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download latest release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p firmware
+          TAG="$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name)"
+          echo "Mirroring tag ${TAG}"
+          gh release download "${TAG}" \
+            --repo "${{ github.repository }}" \
+            --pattern "remote.bin" \
+            --pattern "jockey.bin" \
+            --dir firmware \
+            --clobber
+          printf '%s\n' "${TAG}" > firmware/VERSION.txt
+          ls -la firmware
+
+      - name: Commit and push firmware mirror
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add firmware/remote.bin firmware/jockey.bin firmware/VERSION.txt
+          if git diff --staged --quiet; then
+            echo "No firmware changes"
+            exit 0
+          fi
+          TAG="$(tr -d '\r\n' < firmware/VERSION.txt)"
+          git commit -m "Mirror firmware assets from ${TAG} for GitHub Pages."
+          git push
