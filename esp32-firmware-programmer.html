@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ESP32-S3 Programmer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#14161a;
+    --panel:#1b1e25;
+    --panel-2:#20242c;
+    --line:#2b303b;
+    --text:#e9e7e2;
+    --text-dim:#8b8f9c;
+    --text-faint:#5c606c;
+    --amber:#e8934a;
+    --amber-dim:#a86a37;
+    --amber-glow:rgba(232,147,74,0.35);
+    --green:#7fbf6a;
+    --red:#e2685c;
+    --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(1200px 600px at 15% -10%, rgba(232,147,74,0.06), transparent 60%),
+      var(--bg);
+    color:var(--text);
+    font-family:'Inter',system-ui,sans-serif;
+    min-height:100vh;
+    padding:32px 20px 60px;
+  }
+  .wrap{max-width:560px;margin:0 auto;}
+
+  header{
+    display:flex;justify-content:space-between;align-items:flex-start;
+    margin-bottom:24px;flex-wrap:wrap;gap:14px;
+  }
+  h1{
+    font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:700;
+    letter-spacing:0.02em;margin:0;color:var(--text);
+  }
+  .status-pill{
+    display:flex;align-items:center;gap:8px;
+    background:var(--panel);border:1px solid var(--line);
+    padding:7px 13px;border-radius:999px;
+    font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-dim);
+    white-space:nowrap;
+  }
+  .status-dot{
+    width:8px;height:8px;border-radius:50%;background:var(--text-faint);
+    box-shadow:0 0 0 0 transparent;transition:all .2s;
+  }
+  .status-pill.connected .status-dot{background:var(--green);box-shadow:0 0 8px 1px var(--green);}
+  .status-pill.busy .status-dot{background:var(--amber);box-shadow:0 0 8px 1px var(--amber-glow);animation:pulse 1s infinite;}
+  .status-pill.error .status-dot{background:var(--red);box-shadow:0 0 8px 1px var(--red);}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+
+  .panel{
+    background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);padding:20px 22px;margin-bottom:16px;
+  }
+  .panel h2{
+    font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:600;
+    letter-spacing:0.06em;text-transform:uppercase;color:var(--text-dim);
+    margin:0 0 14px;display:flex;align-items:center;gap:10px;
+  }
+  .panel h2 .num{
+    font-family:'JetBrains Mono',monospace;color:var(--amber);font-size:12px;
+    border:1px solid var(--amber-dim);border-radius:4px;padding:1px 6px;
+  }
+  .hint{font-size:12.5px;color:var(--text-faint);line-height:1.6;margin-top:10px;}
+
+  button{
+    font-family:'Inter',sans-serif;font-weight:600;font-size:14px;
+    border-radius:8px;border:1px solid transparent;cursor:pointer;
+    padding:11px 20px;transition:all .15s;
+  }
+  button:disabled{opacity:0.35;cursor:not-allowed;}
+  .btn-primary{background:var(--amber);color:#1a1408;border-color:var(--amber);width:100%;}
+  .btn-primary:hover:not(:disabled){background:#f0a05c;}
+  .btn-ghost{background:transparent;color:var(--text-dim);border-color:transparent;padding:6px 10px;font-size:13px;}
+  .btn-ghost:hover:not(:disabled){color:var(--text);}
+
+  .file-picker{
+    display:flex;align-items:center;gap:10px;background:var(--panel-2);
+    border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+    font-size:13px;color:var(--text-dim);overflow:hidden;cursor:pointer;
+  }
+  .file-picker input[type=file]{display:none;}
+  .file-picker .fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;color:var(--text);}
+  .file-picker .browse{color:var(--amber);font-weight:600;flex-shrink:0;}
+
+  .addr-row{display:flex;align-items:center;gap:10px;margin-top:12px;}
+  .addr-row label{font-size:12px;color:var(--text-dim);white-space:nowrap;}
+  .addr-row input{
+    background:var(--panel-2);border:1px solid var(--line);color:var(--text);
+    border-radius:6px;padding:9px 10px;font-size:13px;font-family:'JetBrains Mono',monospace;
+    width:120px;text-align:center;
+  }
+
+  .progress-outer{
+    height:8px;background:var(--panel-2);border:1px solid var(--line);
+    border-radius:999px;overflow:hidden;margin:14px 0 8px;
+  }
+  .progress-inner{
+    height:100%;width:0%;background:linear-gradient(90deg,var(--amber-dim),var(--amber));
+    transition:width .15s ease;
+  }
+  .progress-label{display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;}
+
+  .log{
+    margin-top:16px;background:#0f1114;border:1px solid var(--line);
+    border-radius:8px;padding:12px 14px;height:180px;overflow-y:auto;
+    font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.7;
+    color:var(--amber);
+  }
+  .log .l-dim{color:var(--text-faint);}
+  .log .l-err{color:var(--red);}
+  .log .l-ok{color:var(--green);}
+  .log::-webkit-scrollbar{width:8px;}
+  .log::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
+
+  .warn-banner{
+    background:rgba(226,104,92,0.08);border:1px solid rgba(226,104,92,0.35);
+    color:#f2a89f;border-radius:8px;padding:14px 16px;font-size:13px;
+    line-height:1.6;margin-bottom:16px;display:none;
+  }
+  .warn-banner.show{display:block;}
+  code{font-family:'JetBrains Mono',monospace;background:var(--panel-2);padding:1px 5px;border-radius:4px;font-size:12px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>ESP32-S3 Programmer</h1>
+    <div class="status-pill" id="statusPill">
+      <span class="status-dot"></span>
+      <span id="statusText">Not connected</span>
+    </div>
+  </header>
+
+  <div class="warn-banner" id="unsupportedWarn">
+    This browser doesn't support Web Serial. Open this page in <strong>Chrome</strong> or <strong>Edge</strong> (desktop), served over <strong>HTTPS or localhost</strong> — save this file and open it directly, not inside an embedded preview.
+  </div>
+
+  <!-- 1. CONNECT -->
+  <section class="panel">
+    <h2><span class="num">1</span> Connect</h2>
+    <button class="btn-primary" id="connectBtn">Connect Device</button>
+    <div class="hint">Plug in via USB‑C. If it doesn't detect automatically, hold <strong>BOOT</strong> and tap <strong>RESET</strong> just before clicking Connect.</div>
+  </section>
+
+  <!-- 2. FIRMWARE -->
+  <section class="panel">
+    <h2><span class="num">2</span> Application Image</h2>
+    <div class="file-picker" id="filePicker">
+      <span class="browse">Choose file</span>
+      <span class="fname" id="fname">No file selected</span>
+      <input type="file" id="fileInput" accept=".bin">
+    </div>
+    <div class="addr-row">
+      <label for="addrInput">Start address</label>
+      <input type="text" id="addrInput" value="0x20000">
+    </div>
+  </section>
+
+  <!-- 3. PROGRAM -->
+  <section class="panel">
+    <h2><span class="num">3</span> Program</h2>
+    <button class="btn-primary" id="programBtn" disabled>Program Device</button>
+
+    <div class="progress-label">
+      <span id="progressLabel">Idle</span>
+      <span id="progressPct">0%</span>
+    </div>
+    <div class="progress-outer"><div class="progress-inner" id="progressBar"></div></div>
+
+    <div class="log" id="log"><span class="l-dim">Waiting for connection…</span></div>
+  </section>
+
+</div>
+
+<script type="module">
+import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.6.0/bundle.js";
+
+// ---------- state ----------
+let port = null;
+let transport = null;
+let esploader = null;
+let connected = false;
+let chipLabel = '';
+
+// ---------- dom refs ----------
+const $ = (id) => document.getElementById(id);
+const statusPill = $('statusPill'), statusText = $('statusText');
+const connectBtn = $('connectBtn');
+const filePicker = $('filePicker'), fileInput = $('fileInput'), fname = $('fname');
+const addrInput = $('addrInput');
+const programBtn = $('programBtn');
+const progressBar = $('progressBar'), progressLabel = $('progressLabel'), progressPct = $('progressPct');
+const logEl = $('log');
+const unsupportedWarn = $('unsupportedWarn');
+
+if (!('serial' in navigator)) {
+  unsupportedWarn.classList.add('show');
+  connectBtn.disabled = true;
+}
+
+// ---------- logging ----------
+function logLine(text, cls) {
+  const span = document.createElement('div');
+  span.textContent = text;
+  if (cls) span.className = cls;
+  logEl.appendChild(span);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+const terminal = {
+  clean() { logEl.innerHTML = ''; },
+  writeLine(data) {
+    logLine(data);
+    const chipMatch = data.match(/Chip is (.+)/i);
+    if (chipMatch) chipLabel = chipMatch[1].trim();
+  },
+  write(data) { logLine(data); },
+};
+
+function setStatus(mode, text) {
+  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');
+  statusText.textContent = text;
+}
+
+function updateProgramButtonState() {
+  const addrOk = /^0x[0-9a-f]+$/i.test(addrInput.value.trim());
+  programBtn.disabled = !(connected && fileInput.files[0] && addrOk);
+}
+
+filePicker.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  fname.textContent = fileInput.files[0] ? fileInput.files[0].name : 'No file selected';
+  fname.style.color = fileInput.files[0] ? 'var(--text)' : '';
+  updateProgramButtonState();
+});
+addrInput.addEventListener('input', updateProgramButtonState);
+
+// ---------- connect ----------
+connectBtn.addEventListener('click', async () => {
+  try {
+    setStatus('busy', 'Connecting…');
+    logLine('Requesting serial port…', 'l-dim');
+    port = await navigator.serial.requestPort();
+    transport = new Transport(port, true);
+
+    esploader = new ESPLoader({ transport, baudrate: 460800, terminal });
+    const chipName = await esploader.main();
+    chipLabel = chipName || chipLabel;
+
+    connected = true;
+    connectBtn.textContent = 'Connected';
+    connectBtn.disabled = true;
+    setStatus('connected', chipLabel || 'Connected');
+    logLine('Connected. Ready to program.', 'l-ok');
+    updateProgramButtonState();
+  } catch (err) {
+    console.error(err);
+    setStatus('error', 'Connection failed');
+    logLine('Connect failed: ' + (err && err.message ? err.message : err), 'l-err');
+  }
+});
+
+// ---------- reset (ESP32-S3 watchdog-reset workaround) ----------
+// esptool-js's built-in hard reset only toggles RTS/DTR, which on native
+// USB-Serial/JTAG boards resets the CPU core but does NOT re-sample the
+// GPIO0 boot-strap pin, so the chip reboots straight back into download
+// mode. Python esptool works around this on ESP32-S3 with a "watchdog
+// reset" (arm the RTC watchdog directly) which forces a full chip reset
+// that does re-sample the strap pin. esptool-js doesn't implement that
+// trick, so it's replicated here via writeReg.
+const RTCCNTL_BASE_REG = 0x60008000;
+const RTC_CNTL_WDTCONFIG0_REG = RTCCNTL_BASE_REG + 0x0098;
+const RTC_CNTL_WDTCONFIG1_REG = RTCCNTL_BASE_REG + 0x009c;
+const RTC_CNTL_WDTWPROTECT_REG = RTCCNTL_BASE_REG + 0x00b0;
+const RTC_CNTL_WDT_WKEY = 0x50d83aa1;
+const RTC_CNTL_OPTION1_REG = 0x6000812c;
+const RTC_CNTL_FORCE_DOWNLOAD_BOOT_MASK = 0x1;
+const WDT_ENABLE_VALUE = 0xd0000102; // (1<<31)|(5<<28)|(1<<8)|2
+
+async function watchdogResetEsp32S3() {
+  try {
+    await esploader.writeReg(RTC_CNTL_OPTION1_REG, 0, RTC_CNTL_FORCE_DOWNLOAD_BOOT_MASK);
+  } catch (_) { /* non-fatal */ }
+  await esploader.writeReg(RTC_CNTL_WDTWPROTECT_REG, RTC_CNTL_WDT_WKEY);
+  await esploader.writeReg(RTC_CNTL_WDTCONFIG1_REG, 2000);
+  await esploader.writeReg(RTC_CNTL_WDTCONFIG0_REG, WDT_ENABLE_VALUE);
+  await esploader.writeReg(RTC_CNTL_WDTWPROTECT_REG, 0);
+  await new Promise((r) => setTimeout(r, 600));
+}
+
+async function performReset() {
+  if (!esploader) return;
+  const isS3 = (chipLabel || '').toUpperCase().includes('S3');
+
+  if (isS3) {
+    try {
+      await watchdogResetEsp32S3();
+      logLine('Device reset (RTC watchdog reset) — running new firmware.', 'l-ok');
+      return;
+    } catch (err) {
+      logLine('Watchdog reset failed, trying hard reset: ' + (err && err.message ? err.message : err), 'l-dim');
+    }
+  }
+  try {
+    await esploader.after('hard_reset', true);
+    logLine('Device reset (hard reset) — running new firmware.', 'l-ok');
+    return;
+  } catch (err) {
+    logLine('Hard reset failed, trying software reset: ' + (err && err.message ? err.message : err), 'l-dim');
+  }
+  try {
+    if (typeof esploader.softReset === 'function') {
+      await esploader.softReset(false);
+      logLine('Device reset (soft reset) — running new firmware.', 'l-ok');
+    }
+  } catch (err) {
+    logLine('Reset failed: ' + (err && err.message ? err.message : err) + ' — power-cycle or press RESET manually.', 'l-err');
+  }
+}
+
+// ---------- program ----------
+programBtn.addEventListener('click', async () => {
+  const file = fileInput.files[0];
+  const address = parseInt(addrInput.value.trim(), 16);
+  if (!file) return;
+
+  programBtn.disabled = true;
+  setStatus('busy', 'Programming…');
+  progressLabel.textContent = 'Preparing image…';
+  progressBar.style.width = '0%';
+  progressPct.textContent = '0%';
+
+  try {
+    const data = new Uint8Array(await file.arrayBuffer());
+
+    await esploader.writeFlash({
+      fileArray: [{ data, address }],
+      flashMode: 'keep',
+      flashFreq: 'keep',
+      flashSize: 'keep',
+      eraseAll: false,
+      compress: true,
+      reportProgress: (fileIndex, written, total) => {
+        const pct = Math.round((written / total) * 100);
+        progressLabel.textContent = 'Writing image';
+        progressPct.textContent = pct + '%';
+        progressBar.style.width = pct + '%';
+      },
+    });
+
+    progressLabel.textContent = 'Resetting device…';
+    logLine('Flash write complete.', 'l-ok');
+
+    await performReset();
+
+    progressLabel.textContent = 'Done';
+    progressPct.textContent = '100%';
+    progressBar.style.width = '100%';
+    setStatus('connected', 'Programmed and running');
+  } catch (err) {
+    console.error(err);
+    setStatus('error', 'Programming failed');
+    progressLabel.textContent = 'Failed';
+    logLine('Programming failed: ' + (err && err.message ? err.message : err), 'l-err');
+  } finally {
+    updateProgramButtonState();
+  }
+});
+</script>
+</body>
+</html>
