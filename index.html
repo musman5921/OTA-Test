@@ -164,6 +164,7 @@
   let remoteBin = null;
   let jockeyBin = null;
   let releaseTag = "";
+  let remoteVersion = ""; // from last successful Ping
   let onlineJockeys = null; // null until Ping
   let pumping = false;
 
@@ -207,6 +208,14 @@
     if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
     if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
     return `${n} B`;
+  }
+
+  /** Match device PROJECT_VER "1.0.13" with release tag "v1.0.13". */
+  function sameVersion(a, b) {
+    const core = (s) => String(s || "").trim().replace(/^[vV]/, "").toLowerCase();
+    const ca = core(a);
+    const cb = core(b);
+    return ca.length > 0 && ca === cb;
   }
 
   /** CRC32 matching esp_rom_crc32_le(0, buf, len) / zlib.crc32. */
@@ -336,6 +345,7 @@
       port = null;
       rxBuf = new Uint8Array(0);
       onlineJockeys = null;
+      remoteVersion = "";
       syncUi();
     }
   }
@@ -516,9 +526,15 @@
         await writeBytes(encodeHdr({ msg: MSG.HELLO }));
         const { hdr, body } = await takeFrame(MSG.HELLO_ACK, 4000);
         const ver = new TextDecoder().decode(body).replace(/\0+$/g, "");
+        remoteVersion = ver;
         onlineJockeys = hdr.totalLen >>> 0;
         log(`Remote version ${ver || "?"} · online Jockeys: ${onlineJockeys}`);
-        if (releaseTag) log(`Loaded release: ${releaseTag}`);
+        if (releaseTag) {
+          log(`Loaded release: ${releaseTag}`);
+          if (sameVersion(ver, releaseTag)) {
+            log(`Remote already matches ${releaseTag} — Flash Remote will be skipped.`, "warn");
+          }
+        }
         syncUi();
         return;
       } catch (e) {
@@ -536,10 +552,23 @@
     const crc = crc32Esp(bin);
     log(`${label}: ${bin.length} bytes`);
     setProgress(0);
-    await writeBytes(encodeHdr({
-      msg: MSG.BEGIN, target, totalLen: bin.length, crc32: crc
-    }));
-    let fr = await takeFrame(MSG.BEGIN_ACK, 15000);
+    const verBytes = new TextEncoder().encode(releaseTag || "");
+    const beginHdr = encodeHdr({
+      msg: MSG.BEGIN,
+      target,
+      chunkLen: verBytes.length,
+      totalLen: bin.length,
+      crc32: crc
+    });
+    await writeBytes(verBytes.length ? concat(beginHdr, verBytes) : beginHdr);
+    let fr = await takeFrame(MSG.BEGIN_ACK, 30000);
+    if (fr.hdr.status === 6) {
+      throw new Error(
+        target === TARGET.SELF
+          ? `Remote already on ${releaseTag || "this version"} — skipped`
+          : `All online Jockeys already on ${releaseTag || "this version"} — skipped`
+      );
+    }
     if (fr.hdr.status !== 0) {
       throw new Error(
         fr.hdr.status === 7
@@ -574,7 +603,9 @@
       throw new Error(
         fr.hdr.status === 7
           ? "No online Jockey available"
-          : `Commit failed: ${ST[fr.hdr.status] || fr.hdr.status}`
+          : fr.hdr.status === 6
+            ? `Already on ${releaseTag || "this version"} — skipped`
+            : `Commit failed: ${ST[fr.hdr.status] || fr.hdr.status}`
       );
     }
     setProgress(1);
@@ -592,22 +623,27 @@
   };
   $("btnHello").onclick = () => hello().catch((e) => log(String(e), "err"));
 
-  $("btnFlashRemote").onclick = () => {
+  $("btnFlashRemote").onclick = async () => {
     if (!remoteBin) return;
     $("btnFlashRemote").disabled = true;
     $("btnFlashJockey").disabled = true;
-    transfer(remoteBin, TARGET.SELF, "Remote")
-      .then(async () => {
-        log("Remote will reboot into the new image.");
-        log("USB will disconnect — Connect USB again, Ping, then Flash Jockeys if needed.", "warn");
-        await disconnect();
-      })
-      .catch(async (e) => {
-        log(String(e), "err");
-        await sendAbort();
-        syncUi();
-      })
-      .finally(() => syncUi());
+    try {
+      await hello();
+      if (releaseTag && remoteVersion && sameVersion(remoteVersion, releaseTag)) {
+        log(`Remote already on ${remoteVersion} — skipped.`, "warn");
+        return;
+      }
+      await transfer(remoteBin, TARGET.SELF, "Remote");
+      log("Remote will reboot into the new image.");
+      log("USB will disconnect — Connect USB again, Ping, then Flash Jockeys if needed.", "warn");
+      await disconnect();
+    } catch (e) {
+      const msg = String(e);
+      log(msg, msg.includes("skipped") ? "warn" : "err");
+      if (!msg.includes("skipped")) await sendAbort();
+    } finally {
+      syncUi();
+    }
   };
 
   $("btnFlashJockey").onclick = async () => {
@@ -615,7 +651,6 @@
     $("btnFlashRemote").disabled = true;
     $("btnFlashJockey").disabled = true;
     try {
-      // Refresh online count before transferring a large image.
       await hello();
       if (onlineJockeys === 0) {
         throw new Error("No online Jockey available");
@@ -623,8 +658,9 @@
       await transfer(jockeyBin, TARGET.JOCKEY, "Jockey");
       log("Online Jockeys should reboot if the update succeeded.");
     } catch (e) {
-      log(String(e), "err");
-      await sendAbort();
+      const msg = String(e);
+      log(msg, msg.includes("skipped") ? "warn" : "err");
+      if (!msg.includes("skipped")) await sendAbort();
     } finally {
       syncUi();
     }
