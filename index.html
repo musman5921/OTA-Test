@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>HaLow Firmware Updater</title>
+  <title>Firmware Updater</title>
   <style>
     :root {
       --bg: #0f141b;
@@ -25,6 +25,7 @@
     }
     main { max-width: 720px; margin: 0 auto; }
     h1 { font-size: 1.6rem; margin: 0 0 0.35rem; }
+    h3 { margin: 0 0 0.6rem; }
     .sub { color: var(--muted); margin-bottom: 1.5rem; line-height: 1.45; }
     .card {
       background: var(--card);
@@ -33,18 +34,28 @@
       margin-bottom: 1rem;
     }
     .row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
-    button {
+    button, select {
       appearance: none;
       border: 0;
       border-radius: 10px;
       padding: 0.7rem 1rem;
       font-weight: 600;
       cursor: pointer;
+      font: inherit;
+    }
+    button {
       background: var(--accent);
       color: #06261d;
     }
     button.secondary { background: #2a3542; color: var(--text); }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
+    select {
+      background: #0c1117;
+      color: var(--text);
+      border: 1px solid #2a3542;
+      min-width: 12rem;
+      max-width: 100%;
+    }
     .log {
       font-family: ui-monospace, Consolas, monospace;
       font-size: 0.85rem;
@@ -70,58 +81,65 @@
     .note { color: var(--muted); font-size: 0.9rem; }
     .warn { color: var(--warn); }
     .err { color: var(--err); }
-    code { color: #b7f5e2; }
+    #releaseListWrap { display: none; margin-top: 0.8rem; }
   </style>
 </head>
 <body>
 <main>
-  <h1>HaLow Firmware Updater</h1>
-  <p class="sub">
-    Loads <code>remote.bin</code> / <code>jockey.bin</code> from this site’s
-    <code>firmware/</code> mirror of the latest <strong>OTA-Test</strong> Release,
-    then flashes over USB Serial/JTAG. No ESP32 Wi‑Fi and no local file picker.
-  </p>
+  <h1>Firmware Updater</h1>
+  <p class="sub">Loads latest Release, then flashes over USB Serial.</p>
 
   <div class="card">
+    <h3>Release</h3>
     <div class="row">
-      <button id="btnRelease" class="secondary" type="button">Load latest release</button>
-      <span id="relInfo" class="note">Release not loaded</span>
+      <button id="btnLatest" class="secondary" type="button">Load latest release</button>
+      <button id="btnPrev" class="secondary" type="button">View previous releases</button>
+      <span id="relInfo" class="note">No release loaded</span>
+    </div>
+    <div id="releaseListWrap">
+      <div class="row">
+        <select id="releaseSelect" aria-label="Previous releases"></select>
+        <button id="btnLoadSelected" type="button">Load selected</button>
+      </div>
     </div>
   </div>
 
   <div class="card">
+    <h3>USB</h3>
     <div class="row">
       <button id="btnConnect" type="button">Connect USB</button>
+      <button id="btnDisconnect" class="secondary" type="button" disabled>Disconnect USB</button>
       <button id="btnHello" class="secondary" type="button" disabled>Ping Remote</button>
       <span id="conn" class="note">Disconnected</span>
     </div>
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0">Update Remote</h3>
-    <p id="nameRemote" class="note">Waiting for release…</p>
+    <h3>Update Remote</h3>
+    <p id="nameRemote" class="note">Load a release first</p>
     <div class="row">
       <button id="btnFlashRemote" type="button" disabled>Flash Remote</button>
     </div>
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0">Update Jockey(s)</h3>
-    <p class="note">Forwards release <code>jockey.bin</code> to every online paired Jockey over HaLow.</p>
-    <p id="nameJockey" class="note">Waiting for release…</p>
+    <h3>Update Jockey(s)</h3>
+    <p class="note">Sends <code>jockey.bin</code> to every online paired Jockey.</p>
+    <p id="nameJockey" class="note">Load a release first</p>
+    <p id="jockeyOnline" class="note">Ping Remote to check online Jockeys</p>
     <div class="row">
       <button id="btnFlashJockey" type="button" disabled>Flash Jockeys</button>
     </div>
   </div>
 
   <div class="card">
+    <h3>Status</h3>
     <div class="bar"><i id="prog"></i></div>
     <pre class="log" id="log"></pre>
   </div>
 </main>
 <script>
 (() => {
-  // Same asset names as firmware ota_github.c / OTA-Test Releases.
   const GH_OWNER = "musman5921";
   const GH_REPO = "OTA-Test";
   const ASSET_REMOTE = "remote.bin";
@@ -146,6 +164,8 @@
   let remoteBin = null;
   let jockeyBin = null;
   let releaseTag = "";
+  let onlineJockeys = null; // null until Ping
+  let pumping = false;
 
   const $ = (id) => document.getElementById(id);
   const logEl = $("log");
@@ -163,9 +183,24 @@
     progEl.style.width = `${Math.max(0, Math.min(100, frac * 100)).toFixed(1)}%`;
   }
 
-  function syncFlashButtons() {
-    $("btnFlashRemote").disabled = !(port && remoteBin);
-    $("btnFlashJockey").disabled = !(port && jockeyBin);
+  function syncUi() {
+    const connected = !!port;
+    $("btnConnect").disabled = connected;
+    $("btnDisconnect").disabled = !connected;
+    $("btnHello").disabled = !connected;
+    $("btnFlashRemote").disabled = !(connected && remoteBin);
+    $("btnFlashJockey").disabled = !(connected && jockeyBin);
+    $("conn").textContent = connected ? "Connected" : "Disconnected";
+    if (onlineJockeys == null) {
+      $("jockeyOnline").textContent = "Ping Remote to check online Jockeys";
+    } else if (onlineJockeys === 0) {
+      $("jockeyOnline").textContent = "No online Jockey available";
+      $("jockeyOnline").className = "note err";
+    } else {
+      $("jockeyOnline").textContent =
+        `${onlineJockeys} online Jockey${onlineJockeys === 1 ? "" : "s"}`;
+      $("jockeyOnline").className = "note";
+    }
   }
 
   function fmtBytes(n) {
@@ -174,9 +209,7 @@
     return `${n} B`;
   }
 
-  /**
-   * CRC32 matching esp_rom_crc32_le(0, buf, len) / zlib.crc32.
-   */
+  /** CRC32 matching esp_rom_crc32_le(0, buf, len) / zlib.crc32. */
   function crc32Esp(buf) {
     let c = 0xffffffff;
     for (let i = 0; i < buf.length; i++) {
@@ -227,10 +260,17 @@
   }
 
   async function pumpRead() {
-    while (port && reader) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (value && value.length) rxBuf = concat(rxBuf, value);
+    pumping = true;
+    try {
+      while (port && reader) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.length) rxBuf = concat(rxBuf, value);
+      }
+    } catch (_) {
+      /* port closed */
+    } finally {
+      pumping = false;
     }
   }
 
@@ -267,25 +307,53 @@
   }
 
   async function writeBytes(u8) {
+    if (!writer) throw new Error("USB not connected");
     await writer.write(u8);
   }
 
+  /** Best-effort ABORT so a failed transfer does not leave the device BUSY. */
+  async function sendAbort() {
+    try {
+      if (writer) await writeBytes(encodeHdr({ msg: MSG.ABORT }));
+    } catch (_) { /* ignore */ }
+  }
+
+  async function disconnect() {
+    try {
+      if (reader) {
+        try { await reader.cancel(); } catch (_) {}
+        try { reader.releaseLock(); } catch (_) {}
+      }
+      if (writer) {
+        try { writer.releaseLock(); } catch (_) {}
+      }
+      if (port) {
+        try { await port.close(); } catch (_) {}
+      }
+    } finally {
+      reader = null;
+      writer = null;
+      port = null;
+      rxBuf = new Uint8Array(0);
+      onlineJockeys = null;
+      syncUi();
+    }
+  }
+
   /**
-   * Download a firmware blob from the same GitHub Pages origin.
-   *
-   * Direct browser fetch of GitHub Release asset URLs fails CORS
-   * (api.github.com works; objects.githubusercontent.com does not allow
-   * cross-origin reads). Pages serves copies under ./firmware/.
+   * Download firmware from same-origin Pages paths (Release CDN is CORS-blocked).
+   * @param label remote.bin | jockey.bin
+   * @param basePath e.g. "firmware" or "firmware/releases/v1.0.12"
    */
-  async function downloadMirror(label) {
-    const url = new URL(`firmware/${label}`, window.location.href);
-    url.searchParams.set("t", String(Date.now())); // bust CDN/browser cache
-    log(`Downloading ${url.pathname}…`);
+  async function downloadBin(label, basePath) {
+    const url = new URL(`${basePath}/${label}`, window.location.href);
+    url.searchParams.set("t", String(Date.now()));
+    log(`Downloading ${label}…`);
     const res = await fetch(url.href, { cache: "no-store" });
     if (!res.ok) {
       throw new Error(
-        `${label} missing on Pages (HTTP ${res.status}). ` +
-        `Push firmware/${label} to main (or run the mirror-release workflow).`
+        `${label} not found for this release on the site (HTTP ${res.status}). ` +
+        `Only mirrored releases can be loaded here.`
       );
     }
     const buf = new Uint8Array(await res.arrayBuffer());
@@ -293,38 +361,42 @@
     return buf;
   }
 
-  /**
-   * Load firmware from Pages mirror; show latest Release tag from GitHub API.
-   */
-  async function loadLatestRelease() {
-    $("btnRelease").disabled = true;
+  async function applyBins(tag, basePath) {
     remoteBin = null;
     jockeyBin = null;
-    releaseTag = "";
+    releaseTag = tag;
     $("nameRemote").textContent = "Loading…";
     $("nameJockey").textContent = "Loading…";
-    $("relInfo").textContent = "Loading firmware…";
-    syncFlashButtons();
+    $("relInfo").textContent = `Loading ${tag}…`;
+    syncUi();
 
+    remoteBin = await downloadBin(ASSET_REMOTE, basePath);
+    $("nameRemote").textContent = `${ASSET_REMOTE} (${tag}) · ${fmtBytes(remoteBin.length)}`;
+    jockeyBin = await downloadBin(ASSET_JOCKEY, basePath);
+    $("nameJockey").textContent = `${ASSET_JOCKEY} (${tag}) · ${fmtBytes(jockeyBin.length)}`;
+    $("relInfo").textContent = `Loaded ${tag}`;
+    log("Firmware ready.", "warn");
+    syncUi();
+  }
+
+  /** Load latest: prefer Pages mirror under firmware/. */
+  async function loadLatestRelease() {
+    $("btnLatest").disabled = true;
+    $("btnPrev").disabled = true;
+    $("releaseListWrap").style.display = "none";
     try {
-      // Optional: learn latest GitHub tag (API allows CORS; asset download does not).
+      let apiTag = "";
       try {
-        const api =
-          `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/releases/latest`;
-        log(`GET ${api}`);
-        const res = await fetch(api, {
-          headers: { Accept: "application/vnd.github+json" }
-        });
+        const res = await fetch(
+          `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/releases/latest`,
+          { headers: { Accept: "application/vnd.github+json" } }
+        );
         if (res.ok) {
           const rel = await res.json();
-          releaseTag = rel.tag_name || "";
-          log(`Latest GitHub release: ${releaseTag || "?"}`);
-        } else {
-          log(`releases/latest HTTP ${res.status} — continuing with Pages mirror`, "warn");
+          apiTag = rel.tag_name || "";
+          log(`Latest GitHub release: ${apiTag || "?"}`);
         }
-      } catch (e) {
-        log(`Release API unavailable (${e}) — using Pages mirror`, "warn");
-      }
+      } catch (_) { /* optional */ }
 
       let mirrorVer = "";
       try {
@@ -332,42 +404,89 @@
           new URL(`firmware/VERSION.txt?t=${Date.now()}`, window.location.href).href,
           { cache: "no-store" }
         );
-        if (vRes.ok) {
-          mirrorVer = (await vRes.text()).trim();
-          log(`Pages firmware mirror tag: ${mirrorVer}`);
-        }
+        if (vRes.ok) mirrorVer = (await vRes.text()).trim();
       } catch (_) { /* optional */ }
 
-      if (releaseTag && mirrorVer && releaseTag !== mirrorVer) {
-        log(
-          `Mirror ${mirrorVer} differs from GitHub latest ${releaseTag}. ` +
-          `Re-run mirror workflow or update firmware/ after publishing the Release.`,
-          "warn"
-        );
+      if (mirrorVer) log(`Site firmware: ${mirrorVer}`);
+      if (apiTag && mirrorVer && apiTag !== mirrorVer) {
+        log(`Site still has ${mirrorVer}; GitHub latest is ${apiTag}. Wait for mirror update.`, "warn");
       }
 
-      const shownTag = mirrorVer || releaseTag || "mirror";
-      $("relInfo").textContent = `Firmware: ${shownTag}`;
-
-      remoteBin = await downloadMirror(ASSET_REMOTE);
-      $("nameRemote").textContent =
-        `${ASSET_REMOTE} (${shownTag}) · ${fmtBytes(remoteBin.length)}`;
-
-      jockeyBin = await downloadMirror(ASSET_JOCKEY);
-      $("nameJockey").textContent =
-        `${ASSET_JOCKEY} (${shownTag}) · ${fmtBytes(jockeyBin.length)}`;
-
-      log("Firmware ready.", "warn");
+      const tag = mirrorVer || apiTag || "latest";
+      await applyBins(tag, "firmware");
     } catch (e) {
-      $("relInfo").textContent = "Failed to load firmware";
+      $("relInfo").textContent = "Failed to load release";
       $("nameRemote").textContent = "—";
       $("nameJockey").textContent = "—";
       remoteBin = null;
       jockeyBin = null;
       log(String(e), "err");
+      syncUi();
     } finally {
-      $("btnRelease").disabled = false;
-      syncFlashButtons();
+      $("btnLatest").disabled = false;
+      $("btnPrev").disabled = false;
+    }
+  }
+
+  /** List releases from GitHub API; user picks one to load from Pages archive. */
+  async function viewPreviousReleases() {
+    $("btnLatest").disabled = true;
+    $("btnPrev").disabled = true;
+    try {
+      log("Loading release list…");
+      const res = await fetch(
+        `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/releases?per_page=30`,
+        { headers: { Accept: "application/vnd.github+json" } }
+      );
+      if (!res.ok) throw new Error(`Could not list releases (HTTP ${res.status})`);
+      const list = await res.json();
+      const sel = $("releaseSelect");
+      sel.innerHTML = "";
+      if (!Array.isArray(list) || list.length === 0) {
+        throw new Error("No releases found");
+      }
+      for (const rel of list) {
+        const tag = rel.tag_name || "";
+        if (!tag) continue;
+        const opt = document.createElement("option");
+        opt.value = tag;
+        opt.textContent = `${tag}${rel.prerelease ? " (pre)" : ""}`;
+        sel.appendChild(opt);
+      }
+      $("releaseListWrap").style.display = "block";
+      log(`Found ${sel.options.length} releases — pick one and Load selected.`);
+    } catch (e) {
+      log(String(e), "err");
+    } finally {
+      $("btnLatest").disabled = false;
+      $("btnPrev").disabled = false;
+    }
+  }
+
+  async function loadSelectedRelease() {
+    const tag = $("releaseSelect").value;
+    if (!tag) return;
+    $("btnLoadSelected").disabled = true;
+    try {
+      // Latest site mirror lives at firmware/; older tags under firmware/releases/<tag>/.
+      let mirrorVer = "";
+      try {
+        const vRes = await fetch(
+          new URL(`firmware/VERSION.txt?t=${Date.now()}`, window.location.href).href,
+          { cache: "no-store" }
+        );
+        if (vRes.ok) mirrorVer = (await vRes.text()).trim();
+      } catch (_) {}
+
+      const basePath =
+        (mirrorVer && tag === mirrorVer) ? "firmware" : `firmware/releases/${tag}`;
+      log(`Loading release ${tag}…`);
+      await applyBins(tag, basePath);
+    } catch (e) {
+      log(String(e), "err");
+      $("relInfo").textContent = `Failed: ${tag}`;
+    } finally {
+      $("btnLoadSelected").disabled = false;
     }
   }
 
@@ -376,24 +495,18 @@
       log("WebSerial unavailable — use Chrome or Edge on desktop.", "err");
       return;
     }
+    if (port) await disconnect();
     port = await navigator.serial.requestPort();
     await port.open({ baudRate: 115200 });
     reader = port.readable.getReader();
     writer = port.writable.getWriter();
-    pumpRead().catch(() => {});
-    $("conn").textContent = "Connected";
-    $("btnHello").disabled = false;
-    syncFlashButtons();
     rxBuf = new Uint8Array(0);
-    log("USB port open. Wait a few seconds if the Remote just rebooted, then Ping Remote.");
-    log("Use the USB Serial/JTAG COM port (not UART0 used by idf.py monitor).", "warn");
+    pumpRead().catch(() => {});
+    syncUi();
+    log("USB connected. Wait a few seconds if the Remote just rebooted, then Ping Remote.");
+    log("Use the USB Serial COM port.", "warn");
   }
 
-  /**
-   * Ping Remote with retries.
-   * Opening WebSerial often resets ESP32-S3; wait for boot + USB OTA task.
-   * Also try a second COM port if you still time out (UART vs USB Serial/JTAG).
-   */
   async function hello() {
     const attempts = 5;
     let lastErr = null;
@@ -403,33 +516,36 @@
         await writeBytes(encodeHdr({ msg: MSG.HELLO }));
         const { hdr, body } = await takeFrame(MSG.HELLO_ACK, 4000);
         const ver = new TextDecoder().decode(body).replace(/\0+$/g, "");
-        log(`HELLO_ACK status=${ST[hdr.status] || hdr.status} version=${ver || "?"}`);
-        if (releaseTag) {
-          log(`GitHub latest tag=${releaseTag}`);
-        }
+        onlineJockeys = hdr.totalLen >>> 0;
+        log(`Remote version ${ver || "?"} · online Jockeys: ${onlineJockeys}`);
+        if (releaseTag) log(`Loaded release: ${releaseTag}`);
+        syncUi();
         return;
       } catch (e) {
         lastErr = e;
-        log(`Ping attempt ${i}/${attempts} failed — waiting for Remote boot…`, "warn");
+        log(`Ping attempt ${i}/${attempts} failed — waiting…`, "warn");
         await new Promise((r) => setTimeout(r, 1500));
       }
     }
     throw new Error(
-      `${lastErr || "Ping failed"}. Tips: wait ~5s after Connect (USB may reset the chip); ` +
-      `pick ESP32-S3 USB Serial/JTAG (not the UART bridge); close idf.py monitor on that port.`
+      `${lastErr || "Ping failed"}. Wait ~5s after Connect, use the USB Serial COM port, then try again.`
     );
   }
 
   async function transfer(bin, target, label) {
     const crc = crc32Esp(bin);
-    log(`${label}: ${bin.length} bytes crc=0x${crc.toString(16)}`);
+    log(`${label}: ${bin.length} bytes`);
     setProgress(0);
     await writeBytes(encodeHdr({
       msg: MSG.BEGIN, target, totalLen: bin.length, crc32: crc
     }));
     let fr = await takeFrame(MSG.BEGIN_ACK, 15000);
     if (fr.hdr.status !== 0) {
-      throw new Error(`BEGIN_ACK ${ST[fr.hdr.status] || fr.hdr.status}`);
+      throw new Error(
+        fr.hdr.status === 7
+          ? "No online Jockey available"
+          : `BEGIN failed: ${ST[fr.hdr.status] || fr.hdr.status}`
+      );
     }
     let seq = 0;
     for (let off = 0; off < bin.length; off += CHUNK) {
@@ -440,11 +556,10 @@
       await writeBytes(concat(hdr, chunk));
       fr = await takeFrame(MSG.DATA_ACK, 10000);
       while (fr.hdr.msg === MSG.PROGRESS) {
-        log(`PROGRESS slot/hint=${fr.hdr.seq}`);
         fr = await takeFrame(MSG.DATA_ACK, 10000);
       }
       if (fr.hdr.status !== 0 || fr.hdr.seq !== seq) {
-        throw new Error(`DATA_ACK fail status=${ST[fr.hdr.status] || fr.hdr.status} seq=${fr.hdr.seq}`);
+        throw new Error(`Transfer failed at chunk ${seq}`);
       }
       seq++;
       setProgress((off + chunk.length) / bin.length * 0.9);
@@ -452,23 +567,29 @@
     await writeBytes(encodeHdr({ msg: MSG.COMMIT, target, totalLen: bin.length, crc32: crc }));
     fr = await takeFrame(MSG.COMMIT_ACK, 600000);
     while (fr.hdr.msg === MSG.PROGRESS) {
-      log(`Forwarding… progress seq=${fr.hdr.seq}`);
+      log(`Forwarding to Jockey ${fr.hdr.seq}…`);
       fr = await takeFrame(MSG.COMMIT_ACK, 600000);
     }
     if (fr.hdr.status !== 0) {
       throw new Error(
-        `COMMIT_ACK ${ST[fr.hdr.status] || fr.hdr.status}` +
-        (fr.hdr.status === 5
-          ? ` device=0x${fr.hdr.totalLen.toString(16)} host=0x${fr.hdr.crc32.toString(16)}`
-          : "")
+        fr.hdr.status === 7
+          ? "No online Jockey available"
+          : `Commit failed: ${ST[fr.hdr.status] || fr.hdr.status}`
       );
     }
     setProgress(1);
-    log(`${label}: COMMIT OK`, "warn");
+    log(`${label}: done`, "warn");
   }
 
-  $("btnRelease").onclick = () => loadLatestRelease();
+  $("btnLatest").onclick = () => loadLatestRelease();
+  $("btnPrev").onclick = () => viewPreviousReleases();
+  $("btnLoadSelected").onclick = () => loadSelectedRelease();
   $("btnConnect").onclick = () => connect().catch((e) => log(String(e), "err"));
+  $("btnDisconnect").onclick = () => {
+    disconnect()
+      .then(() => log("USB disconnected."))
+      .catch((e) => log(String(e), "err"));
+  };
   $("btnHello").onclick = () => hello().catch((e) => log(String(e), "err"));
 
   $("btnFlashRemote").onclick = () => {
@@ -476,26 +597,44 @@
     $("btnFlashRemote").disabled = true;
     $("btnFlashJockey").disabled = true;
     transfer(remoteBin, TARGET.SELF, "Remote")
-      .then(() => log("Remote will reboot into the new image."))
-      .catch((e) => log(String(e), "err"))
-      .finally(() => syncFlashButtons());
+      .then(async () => {
+        log("Remote will reboot into the new image.");
+        log("USB will disconnect — Connect USB again, Ping, then Flash Jockeys if needed.", "warn");
+        await disconnect();
+      })
+      .catch(async (e) => {
+        log(String(e), "err");
+        await sendAbort();
+        syncUi();
+      })
+      .finally(() => syncUi());
   };
-  $("btnFlashJockey").onclick = () => {
+
+  $("btnFlashJockey").onclick = async () => {
     if (!jockeyBin) return;
     $("btnFlashRemote").disabled = true;
     $("btnFlashJockey").disabled = true;
-    transfer(jockeyBin, TARGET.JOCKEY, "Jockey")
-      .then(() => log("Online Jockeys should reboot if COMMIT OK."))
-      .catch((e) => log(String(e), "err"))
-      .finally(() => syncFlashButtons());
+    try {
+      // Refresh online count before transferring a large image.
+      await hello();
+      if (onlineJockeys === 0) {
+        throw new Error("No online Jockey available");
+      }
+      await transfer(jockeyBin, TARGET.JOCKEY, "Jockey");
+      log("Online Jockeys should reboot if the update succeeded.");
+    } catch (e) {
+      log(String(e), "err");
+      await sendAbort();
+    } finally {
+      syncUi();
+    }
   };
 
   if (!("serial" in navigator)) {
     log("Open this page in Chrome or Edge on a desktop OS.", "err");
   }
-
-  // Auto-load latest release when the page opens.
-  loadLatestRelease();
+  syncUi();
+  log("Choose Load latest release or View previous releases to begin.");
 })();
 </script>
 </body>

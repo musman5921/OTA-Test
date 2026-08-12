@@ -1,5 +1,6 @@
 # Mirror latest Release assets into ./firmware for GitHub Pages.
 # Browsers cannot fetch GitHub Release binaries (CORS); same-origin Pages can.
+# Also keeps firmware/releases/<tag>/ so "View previous releases" can load older builds.
 name: Mirror release to Pages
 
 on:
@@ -37,7 +38,12 @@ jobs:
             --dir firmware \
             --clobber
           printf '%s\n' "${TAG}" > firmware/VERSION.txt
+          # Archive copy for "View previous releases" on the updater page.
+          mkdir -p "firmware/releases/${TAG}"
+          cp -f firmware/remote.bin "firmware/releases/${TAG}/remote.bin"
+          cp -f firmware/jockey.bin "firmware/releases/${TAG}/jockey.bin"
           ls -la firmware
+          ls -la "firmware/releases/${TAG}"
 
       - name: Commit and push firmware mirror
         env:
@@ -46,7 +52,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add firmware/remote.bin firmware/jockey.bin firmware/VERSION.txt
+          git add firmware/remote.bin firmware/jockey.bin firmware/VERSION.txt firmware/releases
           if git diff --staged --quiet; then
             echo "No firmware changes"
             exit 0
