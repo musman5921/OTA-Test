@@ -384,17 +384,40 @@
     $("conn").textContent = "Connected";
     $("btnHello").disabled = false;
     syncFlashButtons();
-    log("USB port open. Click Ping Remote.");
+    rxBuf = new Uint8Array(0);
+    log("USB port open. Wait a few seconds if the Remote just rebooted, then Ping Remote.");
+    log("Use the USB Serial/JTAG COM port (not UART0 used by idf.py monitor).", "warn");
   }
 
+  /**
+   * Ping Remote with retries.
+   * Opening WebSerial often resets ESP32-S3; wait for boot + USB OTA task.
+   * Also try a second COM port if you still time out (UART vs USB Serial/JTAG).
+   */
   async function hello() {
-    await writeBytes(encodeHdr({ msg: MSG.HELLO }));
-    const { hdr, body } = await takeFrame(MSG.HELLO_ACK, 3000);
-    const ver = new TextDecoder().decode(body).replace(/\0+$/g, "");
-    log(`HELLO_ACK status=${ST[hdr.status] || hdr.status} version=${ver || "?"}`);
-    if (releaseTag) {
-      log(`GitHub latest tag=${releaseTag}`);
+    const attempts = 5;
+    let lastErr = null;
+    for (let i = 1; i <= attempts; i++) {
+      try {
+        rxBuf = new Uint8Array(0);
+        await writeBytes(encodeHdr({ msg: MSG.HELLO }));
+        const { hdr, body } = await takeFrame(MSG.HELLO_ACK, 4000);
+        const ver = new TextDecoder().decode(body).replace(/\0+$/g, "");
+        log(`HELLO_ACK status=${ST[hdr.status] || hdr.status} version=${ver || "?"}`);
+        if (releaseTag) {
+          log(`GitHub latest tag=${releaseTag}`);
+        }
+        return;
+      } catch (e) {
+        lastErr = e;
+        log(`Ping attempt ${i}/${attempts} failed — waiting for Remote boot…`, "warn");
+        await new Promise((r) => setTimeout(r, 1500));
+      }
     }
+    throw new Error(
+      `${lastErr || "Ping failed"}. Tips: wait ~5s after Connect (USB may reset the chip); ` +
+      `pick ESP32-S3 USB Serial/JTAG (not the UART bridge); close idf.py monitor on that port.`
+    );
   }
 
   async function transfer(bin, target, label) {
