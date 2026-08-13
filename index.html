@@ -540,8 +540,7 @@
           : `BEGIN failed: ${ST[fr.hdr.status] || fr.hdr.status}`
       );
     }
-    // USB upload: 0–90% (Remote) or 0–70% (Jockey, leave room for HaLow forward).
-    const uploadEnd = target === TARGET.JOCKEY ? 0.7 : 0.95;
+    // USB upload progress is independent: always 0–100% of the file transfer.
     let seq = 0;
     for (let off = 0; off < bin.length; off += CHUNK) {
       const chunk = bin.subarray(off, Math.min(bin.length, off + CHUNK));
@@ -557,20 +556,25 @@
         throw new Error(`Transfer failed at chunk ${seq}`);
       }
       seq++;
-      const uploadFrac = (off + chunk.length) / bin.length;
-      setProgress(uploadFrac * uploadEnd, "Uploading over USB");
+      setProgress((off + chunk.length) / bin.length, "Uploading over USB");
+    }
+    setProgress(1, "USB upload complete");
+    if (target === TARGET.JOCKEY) {
+      log("USB upload done — forwarding to Jockeys…", "warn");
+      // Forward progress is independent: reset to 0%, then 1/N … N/N.
+      setProgress(0, "Starting HaLow forward");
     }
     await writeBytes(encodeHdr({ msg: MSG.COMMIT, target, totalLen: bin.length, crc32: crc }));
     fr = await takeFrame(MSG.COMMIT_ACK, 600000);
     // Device PROGRESS: seq=slot, total_len=try_n, crc32=need_n (peers being updated).
     while (fr.hdr.msg === MSG.PROGRESS) {
       const tryN = Math.max(1, fr.hdr.totalLen >>> 0);
-      const needN = Math.max(tryN, fr.hdr.crc32 >>> 0, onlineJockeys || 0, 1);
+      const needN = Math.max(tryN, fr.hdr.crc32 >>> 0, 1);
       const slot = fr.hdr.seq;
-      const forwardFrac = Math.min(1, tryN / needN);
-      const pct = uploadEnd + (1 - uploadEnd) * forwardFrac;
-      setProgress(pct, `Forwarding Jockey ${slot}`);
-      log(`Forwarding to Jockey ${slot} (${tryN}/${needN})… ${Math.round(pct * 100)}%`, "warn");
+      // Forward % only — not mixed with USB upload %.
+      const forwardPct = tryN / needN;
+      setProgress(forwardPct, `Forwarding Jockey ${slot}`);
+      log(`Forwarding to Jockey ${slot} (${tryN}/${needN})… ${Math.round(forwardPct * 100)}%`, "warn");
       fr = await takeFrame(MSG.COMMIT_ACK, 600000);
     }
     if (fr.hdr.status !== 0) {
