@@ -573,21 +573,44 @@
     await writeBytes(encodeHdr({ msg: MSG.COMMIT, target, totalLen: bin.length, crc32: crc }));
     fr = await takeFrame(MSG.COMMIT_ACK, 600000);
 
-    // Per-Jockey forward: progress bar only; log one "done" line when each peer hits 100%.
-    // PROGRESS: seq=slot, chunk_len=try_n|(need_n<<8), total_len=sent, crc32=total
-    const doneJockeys = new Set();
+    /*
+     * Per-Jockey forward progress (bar only).
+     * PROGRESS: seq=slot, chunk_len=try_n|(need_n<<8), total_len=sent, crc32=total
+     * Log one "Jockey N, i/m: done" when that peer hits 100%, or when the next
+     * peer starts (in case the final 100% frame was dropped on USB).
+     */
+    const doneTries = new Set();
+    let curTry = 0;
+    let curSlot = 0;
+    let curNeed = 1;
+    const markJockeyDone = (slot, tryN, needN) => {
+      if (tryN <= 0 || doneTries.has(tryN)) return;
+      doneTries.add(tryN);
+      log(`Jockey ${slot}, ${tryN}/${needN}: done`, "warn");
+    };
     while (fr.hdr.msg === MSG.PROGRESS) {
       const slot = fr.hdr.seq;
-      const tryN = fr.hdr.chunkLen & 0xff;
+      const tryN = Math.max(1, fr.hdr.chunkLen & 0xff);
       const needN = Math.max(tryN, (fr.hdr.chunkLen >> 8) & 0xff, 1);
       const sent = fr.hdr.totalLen >>> 0;
       const total = Math.max(1, fr.hdr.crc32 >>> 0);
-      const frac = Math.min(1, sent / total);
+      // Guard against old firmware packing (try_n/need_n in total_len/crc32).
+      const looksLikeByteProg = total >= 1024 || sent > needN;
+      const frac = looksLikeByteProg
+        ? Math.min(1, sent / total)
+        : (sent > 0 && total > 0 ? Math.min(1, sent / total) : 0);
+
+      if (curTry > 0 && tryN > curTry) {
+        markJockeyDone(curSlot, curTry, curNeed);
+      }
+      curTry = tryN;
+      curSlot = slot;
+      curNeed = needN;
+
       const fwdLabel = `Forwarding file (Jockey ${slot}, ${tryN}/${needN})`;
       setProgress(frac, fwdLabel);
-      if (frac >= 1 && !doneJockeys.has(slot)) {
-        doneJockeys.add(slot);
-        log(`Jockey ${slot}, ${tryN}/${needN}: done`, "warn");
+      if (frac >= 1) {
+        markJockeyDone(slot, tryN, needN);
       }
       fr = await takeFrame(MSG.COMMIT_ACK, 600000);
     }
@@ -599,6 +622,9 @@
             ? `Already on ${releaseTag || "this version"} — skipped`
             : `Commit failed: ${ST[fr.hdr.status] || fr.hdr.status}`
       );
+    }
+    if (curTry > 0) {
+      markJockeyDone(curSlot, curTry, curNeed);
     }
     setProgress(1, "Complete");
     log(`${label}: done`, "warn");
