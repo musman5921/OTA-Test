@@ -526,7 +526,6 @@
     const usbLabel = "Transferring file";
     log(`${label}: ${bin.length} bytes`);
     setProgress(0, usbLabel);
-    log(`${usbLabel}… 0%`);
     const verBytes = new TextEncoder().encode(releaseTag || "");
     const beginHdr = encodeHdr({
       msg: MSG.BEGIN,
@@ -553,7 +552,6 @@
       );
     }
     let seq = 0;
-    let lastLoggedPct = -1;
     for (let off = 0; off < bin.length; off += CHUNK) {
       const chunk = bin.subarray(off, Math.min(bin.length, off + CHUNK));
       const hdr = encodeHdr({
@@ -568,23 +566,16 @@
         throw new Error(`Transfer failed at chunk ${seq}`);
       }
       seq++;
-      const frac = (off + chunk.length) / bin.length;
-      const pct = Math.round(frac * 100);
-      setProgress(frac, usbLabel);
-      if (pct >= lastLoggedPct + 10 || pct === 100) {
-        log(`${usbLabel}… ${pct}%`);
-        lastLoggedPct = pct;
-      }
+      setProgress((off + chunk.length) / bin.length, usbLabel);
     }
     setProgress(1, usbLabel);
-    log(`${usbLabel}… 100%`, "warn");
 
     await writeBytes(encodeHdr({ msg: MSG.COMMIT, target, totalLen: bin.length, crc32: crc }));
     fr = await takeFrame(MSG.COMMIT_ACK, 600000);
 
-    // Per-Jockey forward: each peer is its own 0–100% phase.
+    // Per-Jockey forward: progress bar only; log one "done" line when each peer hits 100%.
     // PROGRESS: seq=slot, chunk_len=try_n|(need_n<<8), total_len=sent, crc32=total
-    let lastFwdKey = "";
+    const doneJockeys = new Set();
     while (fr.hdr.msg === MSG.PROGRESS) {
       const slot = fr.hdr.seq;
       const tryN = fr.hdr.chunkLen & 0xff;
@@ -592,15 +583,11 @@
       const sent = fr.hdr.totalLen >>> 0;
       const total = Math.max(1, fr.hdr.crc32 >>> 0);
       const frac = Math.min(1, sent / total);
-      const pct = Math.round(frac * 100);
       const fwdLabel = `Forwarding file (Jockey ${slot}, ${tryN}/${needN})`;
       setProgress(frac, fwdLabel);
-      const key = `${slot}:${pct}`;
-      if (sent === 0 || pct === 100 || key !== lastFwdKey) {
-        if (sent === 0 || pct === 100 || pct % 10 === 0) {
-          log(`${fwdLabel}… ${pct}%`, pct === 100 ? "warn" : undefined);
-          lastFwdKey = key;
-        }
+      if (frac >= 1 && !doneJockeys.has(slot)) {
+        doneJockeys.add(slot);
+        log(`Jockey ${slot}, ${tryN}/${needN}: done`, "warn");
       }
       fr = await takeFrame(MSG.COMMIT_ACK, 600000);
     }
