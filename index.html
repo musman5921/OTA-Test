@@ -294,11 +294,25 @@
       msg: v.getUint8(4),
       target: v.getUint8(5),
       status: v.getUint8(6),
+      reserved: v.getUint8(7),
       seq: v.getUint16(8, true),
       chunkLen: v.getUint16(10, true),
       totalLen: v.getUint32(12, true),
       crc32: v.getUint32(16, true)
     };
+  }
+
+  /**
+   * Bytes after the 20-byte header. PROGRESS/ACK have no body even if an
+   * older firmware stuffed metadata into chunk_len (that caused the 86% stall).
+   */
+  function frameBodyLen(h) {
+    if (h.msg === MSG.HELLO_ACK) return h.chunkLen;
+    if (h.msg === MSG.PROGRESS || h.msg === MSG.BEGIN_ACK ||
+        h.msg === MSG.DATA_ACK || h.msg === MSG.COMMIT_ACK) {
+      return 0;
+    }
+    return h.chunkLen;
   }
 
   async function pumpRead() {
@@ -324,7 +338,7 @@
         while (i + 20 <= rxBuf.length) {
           const h = parseHdr(rxBuf, i);
           if (h.magic !== MAGIC) { i++; continue; }
-          const need = 20 + h.chunkLen;
+          const need = 20 + frameBodyLen(h);
           if (i + need > rxBuf.length) break;
           const body = rxBuf.slice(i + 20, i + need);
           rxBuf = rxBuf.slice(i + need);
@@ -575,9 +589,8 @@
 
     /*
      * Per-Jockey forward progress (bar only).
-     * PROGRESS: seq=slot, chunk_len=try_n|(need_n<<8), total_len=sent, crc32=total
-     * Log one "Jockey N, i/m: done" when that peer hits 100%, or when the next
-     * peer starts (in case the final 100% frame was dropped on USB).
+     * PROGRESS: no body. seq=slot, target=try_n, reserved=need_n,
+     * total_len=sent, crc32=total.
      */
     const doneTries = new Set();
     let curTry = 0;
@@ -590,8 +603,15 @@
     };
     while (fr.hdr.msg === MSG.PROGRESS) {
       const slot = fr.hdr.seq;
-      const tryN = Math.max(1, fr.hdr.chunkLen & 0xff);
-      const needN = Math.max(tryN, (fr.hdr.chunkLen >> 8) & 0xff, 1);
+      // New firmware: try_n in target, need_n in reserved. chunk_len is 0.
+      let tryN = fr.hdr.target || 0;
+      let needN = fr.hdr.reserved || 0;
+      if (!tryN && !needN && fr.hdr.chunkLen) {
+        tryN = fr.hdr.chunkLen & 0xff;
+        needN = (fr.hdr.chunkLen >> 8) & 0xff;
+      }
+      tryN = Math.max(1, tryN);
+      needN = Math.max(tryN, needN, 1);
       const sent = fr.hdr.totalLen >>> 0;
       const total = Math.max(1, fr.hdr.crc32 >>> 0);
       // Guard against old firmware packing (try_n/need_n in total_len/crc32).
